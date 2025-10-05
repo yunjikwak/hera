@@ -1,0 +1,78 @@
+# 🚀 NASA 우주 거주지 레이아웃 평가 시스템 - .gitignore
+
+## 📁 **빌드 출력**
+build/
+bin/
+out/
+target/
+
+## 📁 **IDE 설정**
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
+## 📁 **운영체제**
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+## 📁 **Java**
+*.class
+*.jar
+*.war
+*.ear
+*.log
+*.tmp
+*.bak
+
+## 📁 **Spring Boot**
+application-local.properties
+application-dev.properties
+application-prod.properties
+
+## 📁 **데이터베이스**
+*.db
+*.sqlite
+*.sqlite3
+
+## 📁 **RAG 시스템**
+docs/rag/embeddings/
+docs/rag/chunks/
+docs/rag/index/
+
+## 📁 **로그**
+logs/
+*.log
+application.log
+
+## 📁 **임시 파일**
+temp/
+tmp/
+*.tmp
+*.temp
+
+## 📁 **의존성**
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+## 📁 **테스트**
+test-results/
+coverage/
+
+## 📁 **문서 생성**
+docs/generated/
+docs/build/
+
+## 📁 **백업**
+*.backup
+*.bak
+*.old
