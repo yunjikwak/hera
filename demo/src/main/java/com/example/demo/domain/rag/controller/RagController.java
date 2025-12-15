@@ -3,46 +3,35 @@ package com.example.demo.domain.rag.controller;
 import com.example.demo.domain.rag.dto.RagAnswer;
 import com.example.demo.domain.rag.dto.RagQueryRequest;
 import com.example.demo.domain.rag.service.RagQueryService;
+import com.example.demo.global.dto.ApiResponse;
+import com.example.demo.global.exception.BusinessException;
+import com.example.demo.global.exception.ErrorCode;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/v1/rag")
 @CrossOrigin(origins = "*")
+@RequiredArgsConstructor
 public class RagController {
 
-    private static final Logger logger = LoggerFactory.getLogger(RagController.class);
-
-    @Autowired
-    private RagQueryService ragQueryService;
+    private final RagQueryService ragQueryService;
 
     @PostMapping("/ask")
-    public ResponseEntity<RagAnswer> askQuestion(@RequestBody RagQueryRequest request) {
-        try {
-            logger.info("Received RAG query: {}", request.getQuestion());
-
-            if (request.getQuestion() == null || request.getQuestion().trim().isEmpty()) {
-                return ResponseEntity.badRequest().body(
-                        new RagAnswer("Question cannot be empty", null, null));
-            }
-
-            RagAnswer answer = ragQueryService.query(request);
-            return ResponseEntity.ok(answer);
-
-        } catch (Exception e) {
-            logger.error("Error processing RAG query", e);
-            return ResponseEntity.internalServerError().body(
-                    new RagAnswer("An error occurred while processing your question: " + e.getMessage(),
-                            null, null));
+    public ResponseEntity<ApiResponse<RagAnswer>> askQuestion(@RequestBody RagQueryRequest request) {
+        if (request.getQuestion() == null || request.getQuestion().trim().isEmpty()) {
+            throw new BusinessException(ErrorCode.INVALID_REQUEST, "질문 내용은 필수입니다.");
         }
+
+        RagAnswer answer = ragQueryService.query(request);
+        return ResponseEntity.ok(ApiResponse.success(answer));
     }
 
     @GetMapping("/health")
-    public ResponseEntity<String> health() {
-        return ResponseEntity.ok("RAG service is running");
+    public ResponseEntity<ApiResponse<String>> health() {
+        return ResponseEntity.ok(ApiResponse.success("RAG service is running"));
     }
 }

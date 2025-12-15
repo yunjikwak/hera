@@ -44,7 +44,7 @@ public class AdvancedEvaluationService {
     private LayoutEvaluationResponse applyMissionModifications(LayoutEvaluationRequest request,
             LayoutEvaluationResponse basicResponse) {
         String missionProfile = request.getMissionProfile();
-        if (missionProfile == null) {
+        if (missionProfile == null || missionProfile.isEmpty()) {
             return basicResponse;
         }
 

@@ -1,6 +1,7 @@
 package com.example.demo.domain.evaluation.service;
 
 import com.example.demo.domain.evaluation.dto.*;
+import com.example.demo.domain.evaluation.dto.LayoutEvaluationResponse.ValidationResult;
 import com.example.demo.domain.module.dto.*;
 // import com.example.demo.global.enums.MissionProfile;
 import com.example.demo.domain.module.entity.Module;
@@ -25,7 +26,7 @@ public class LayoutEvaluationService {
     private static final Logger logger = LoggerFactory.getLogger(LayoutEvaluationService.class);
 
     private static final int REQUIRED_MODULE_COUNT = 18;
-    private static final int PENALTY_SCORE = 100;
+    private static final int PENALTY_SCORE = 0;
     private final ModuleService moduleService;
 
     // 배치 레이아웃 종합 평가 수행
@@ -33,48 +34,36 @@ public class LayoutEvaluationService {
     public LayoutEvaluationResponse evaluateLayout(LayoutEvaluationRequest request) {
         logger.info("배치 평가 시작: {}", request);
 
-        try {
-            // 1단계: 기본 제약 조건 검증
-            LayoutEvaluationResponse.ValidationResult validation = validateBasicConstraints(request);
+        // 1단계: 기본 제약 조건 검증
+        ValidationResult validation = validateBasicConstraints(request);
 
-            if (!validation.isValid()) {
-                logger.warn("기본 제약 조건 위반: {}", validation);
-                return createFailureResponse(validation, request);
-            }
-
-            // 2단계: 점수 계산
-            EvaluationScores scores = calculateScores(request);
-
-            // 3단계: 피드백 생성
-            EvaluationFeedback feedback = generateFeedback(request, scores);
-
-            logger.info("배치 평가 완료: 최종점수={}", scores.getOverallScore());
-            return new LayoutEvaluationResponse(scores, feedback, validation);
-
-        } catch (Exception e) {
-            logger.error("Error during layout evaluation", e);
-            return createErrorResponse("CALCULATION_ERROR",
-                    "An error occurred during score calculation: " + e.getMessage());
+        if (!validation.isValid()) {
+            logger.warn("기본 제약 조건 위반: {}", validation);
+            return createFailureResponse(validation, request);
         }
+
+        // 2단계: 점수 계산
+        EvaluationScores scores = calculateScores(request);
+
+        // 3단계: 피드백 생성
+        EvaluationFeedback feedback = generateFeedback(request, scores);
+
+        logger.info("배치 평가 완료: 최종점수={}", scores.getOverallScore());
+        return new LayoutEvaluationResponse(scores, feedback, validation);
     }
 
     // 기본 제약 조건 검증
-    private LayoutEvaluationResponse.ValidationResult validateBasicConstraints(LayoutEvaluationRequest request) {
+    private ValidationResult validateBasicConstraints(LayoutEvaluationRequest request) {
         // 모든 모듈 사용
         // 모듈 겹침 확인
         // 모듈이 거주지 공간보다 큰지 확인
         // NHV 최소 부피 만족 확인
-        boolean allModulesUsed = checkAllModulesUsed(request);
-        boolean noOverlapping = checkNoOverlapping(request);
-        boolean fitInHabitat = checkFitInHabitat(request);
-        boolean nhvSatisfied = checkNhvSatisfied(request);
 
-        // boolean allModulesUsed = true;
-        // boolean noOverlapping = true;
-        // boolean fitInHabitat = true;
-        // boolean nhvSatisfied = true;
-
-        return new LayoutEvaluationResponse.ValidationResult(allModulesUsed, noOverlapping, fitInHabitat, nhvSatisfied);
+        return new ValidationResult(
+                checkAllModulesUsed(request),
+                checkNoOverlapping(request),
+                checkFitInHabitat(request),
+                checkNhvSatisfied(request));
     }
 
     // 모든 모듈 사용 여부 확인
@@ -83,9 +72,36 @@ public class LayoutEvaluationService {
                 .map(ModulePlacement::getModuleId)
                 .collect(Collectors.toSet());
 
-        boolean result = usedModuleIds.size() == REQUIRED_MODULE_COUNT;
-        logger.debug("모든 모듈 사용 확인: {}/{}", usedModuleIds.size(), REQUIRED_MODULE_COUNT);
-        return result;
+        return usedModuleIds.size() == REQUIRED_MODULE_COUNT;
+    }
+
+    // NHV 최소 부피 만족 여부 확인 (기본 제약 조건 - 실패 처리)
+    private boolean checkNhvSatisfied(LayoutEvaluationRequest request) {
+        boolean allSatisfied = true;
+        List<String> failedModules = new ArrayList<>();
+
+        for (ModulePlacement placement : request.getModulePlacements()) {
+            Module module = moduleService.findEntityById(placement.getModuleId());
+
+            double userVolume = placement.getSize().getVolumeAsDouble();
+            double requiredNhv = module.getNhv().doubleValue();
+
+            // 반드시 지켜야 할 조건: NHV_actual ≥ NHV_min (미만이면 실패)
+            if (userVolume < requiredNhv) {
+                String failureInfo = String.format(
+                        "Module%d(%s): UserVolume=%.2fm³, RequiredNHV=%.2fm³, Deficit=%.2fm³",
+                        placement.getModuleId(), module.getName(), userVolume, requiredNhv, requiredNhv - userVolume);
+                failedModules.add(failureInfo);
+                logger.warn("NHV 부족으로 실패: {}", failureInfo);
+                allSatisfied = false;
+            }
+        }
+
+        if (!allSatisfied) {
+            logger.warn("NHV 요구사항 미충족 모듈들: {}", String.join(", ", failedModules));
+        }
+
+        return allSatisfied;
     }
 
     // 모듈 겹침 여부 확인
@@ -103,6 +119,26 @@ public class LayoutEvaluationService {
         }
 
         return true;
+    }
+
+    // 회전된 모듈의 8개 꼭짓점이 모두 거주지 내에 있는지 확인
+    private boolean checkFitInHabitat(LayoutEvaluationRequest request) {
+        HabitatDimensions dims = request.getHabitatDimensions();
+
+        for (ModulePlacement placement : request.getModulePlacements()) {
+            List<ModulePlacement.Position> vertices = calculateRotatedVertices(placement);
+
+            // 각 꼭짓점이 거주지 경계를 벗어나는지 확인
+            for (ModulePlacement.Position vertex : vertices) {
+                if (vertex.getXAsDouble() < 0 || vertex.getXAsDouble() > dims.getXAsDouble() ||
+                        vertex.getYAsDouble() < 0 || vertex.getYAsDouble() > dims.getYAsDouble() ||
+                        vertex.getZAsDouble() < 0 || vertex.getZAsDouble() > dims.getZAsDouble()) {
+                    logger.debug("모듈 {}의 꼭짓점 {}이 거주지 경계를 벗어남", placement.getModuleId(), vertex);
+                    return false; // 하나라도 벗어나면 즉시 실패
+                }
+            }
+        }
+        return true; // 모든 모듈의 모든 꼭짓점이 내부에 있음
     }
 
     // 두 모듈 간 겹침 여부 확인
@@ -198,26 +234,6 @@ public class LayoutEvaluationService {
         return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
-    // 회전된 모듈의 8개 꼭짓점이 모두 거주지 내에 있는지 확인
-    private boolean checkFitInHabitat(LayoutEvaluationRequest request) {
-        HabitatDimensions dims = request.getHabitatDimensions();
-
-        for (ModulePlacement placement : request.getModulePlacements()) {
-            List<ModulePlacement.Position> vertices = calculateRotatedVertices(placement);
-
-            // 각 꼭짓점이 거주지 경계를 벗어나는지 확인
-            for (ModulePlacement.Position vertex : vertices) {
-                if (vertex.getXAsDouble() < 0 || vertex.getXAsDouble() > dims.getXAsDouble() ||
-                        vertex.getYAsDouble() < 0 || vertex.getYAsDouble() > dims.getYAsDouble() ||
-                        vertex.getZAsDouble() < 0 || vertex.getZAsDouble() > dims.getZAsDouble()) {
-                    logger.debug("모듈 {}의 꼭짓점 {}이 거주지 경계를 벗어남", placement.getModuleId(), vertex);
-                    return false; // 하나라도 벗어나면 즉시 실패
-                }
-            }
-        }
-        return true; // 모든 모듈의 모든 꼭짓점이 내부에 있음
-    }
-
     // 회전된 모듈의 8개 꼭짓점 좌표를 계산
     private List<ModulePlacement.Position> calculateRotatedVertices(ModulePlacement placement) {
         ModulePlacement.Position center = placement.getPosition();
@@ -283,45 +299,12 @@ public class LayoutEvaluationService {
         return new double[] { x3, y3, z3 };
     }
 
-    // NHV 최소 부피 만족 여부 확인 (기본 제약 조건 - 실패 처리)
-    private boolean checkNhvSatisfied(LayoutEvaluationRequest request) {
-        boolean allSatisfied = true;
-        List<String> failedModules = new ArrayList<>();
-
-        for (ModulePlacement placement : request.getModulePlacements()) {
-            Module module = moduleService.findEntityById(placement.getModuleId());
-            if (module == null)
-                continue;
-
-            double userVolume = placement.getSize().getVolumeAsDouble();
-            double requiredNhv = module.getNhv().doubleValue();
-
-            // 반드시 지켜야 할 조건: NHV_actual ≥ NHV_min (미만이면 실패)
-            if (userVolume < requiredNhv) {
-                String failureInfo = String.format(
-                        "Module%d(%s): UserVolume=%.2fm³, RequiredNHV=%.2fm³, Deficit=%.2fm³",
-                        placement.getModuleId(), module.getName(), userVolume, requiredNhv, requiredNhv - userVolume);
-                failedModules.add(failureInfo);
-                logger.warn("NHV 부족으로 실패: {}", failureInfo);
-                allSatisfied = false;
-            }
-        }
-
-        if (!allSatisfied) {
-            logger.warn("NHV 요구사항 미충족 모듈들: {}", String.join(", ", failedModules));
-        }
-
-        return allSatisfied;
-    }
-
     // NHV 실패 모듈들의 상세 정보를 반환하는 메서드
     private List<String> getNhvFailureDetails(LayoutEvaluationRequest request) {
         List<String> failedModules = new ArrayList<>();
 
         for (ModulePlacement placement : request.getModulePlacements()) {
             Module module = moduleService.findEntityById(placement.getModuleId());
-            if (module == null)
-                continue;
 
             double userVolume = placement.getSize().getVolumeAsDouble();
             double requiredNhv = module.getNhv().doubleValue();
@@ -383,8 +366,6 @@ public class LayoutEvaluationService {
 
         for (ModulePlacement placement : request.getModulePlacements()) {
             Module module = moduleService.findEntityById(placement.getModuleId());
-            if (module == null)
-                continue;
 
             double userVolume = placement.getSize().getVolumeAsDouble();
             double requiredNhv = module.getNhv().doubleValue();
@@ -759,23 +740,7 @@ public class LayoutEvaluationService {
         return placements.stream()
                 .filter(placement -> {
                     Module module = moduleService.findEntityById(placement.getModuleId());
-                    if (module == null) {
-                        logger.debug("모듈 ID {}를 찾을 수 없음", placement.getModuleId());
-                        return false;
-                    }
-
-                    boolean hasTag = module.hasTag(tagName);
-                    logger.debug("모듈 {} (ID: {}) - 태그 '{}' 보유: {}",
-                            module.getName(), placement.getModuleId(), tagName, hasTag);
-
-                    if (hasTag) {
-                        logger.debug("모듈 {}의 태그들: {}", module.getName(),
-                                module.getTags().stream()
-                                        .map(tag -> tag.getTagName())
-                                        .collect(Collectors.toList()));
-                    }
-
-                    return hasTag;
+                    return module.hasTag(tagName);
                 })
                 .collect(Collectors.toList());
     }
@@ -843,8 +808,6 @@ public class LayoutEvaluationService {
     private boolean hasOptimalNhvRatio(LayoutEvaluationRequest request) {
         for (ModulePlacement placement : request.getModulePlacements()) {
             Module module = moduleService.findEntityById(placement.getModuleId());
-            if (module == null)
-                continue;
 
             double userVolume = placement.getSize().getVolumeAsDouble();
             double requiredNhv = module.getNhv().doubleValue();
@@ -861,8 +824,6 @@ public class LayoutEvaluationService {
     private boolean hasInefficientNhvRatio(LayoutEvaluationRequest request) {
         for (ModulePlacement placement : request.getModulePlacements()) {
             Module module = moduleService.findEntityById(placement.getModuleId());
-            if (module == null)
-                continue;
 
             double userVolume = placement.getSize().getVolumeAsDouble();
             double requiredNhv = module.getNhv().doubleValue();
@@ -927,15 +888,5 @@ public class LayoutEvaluationService {
         }
 
         return feedback;
-    }
-
-    // 에러 생성
-    private LayoutEvaluationResponse createErrorResponse(String errorCode, String errorMessage) {
-        EvaluationScores scores = new EvaluationScores(PENALTY_SCORE);
-        EvaluationFeedback feedback = new EvaluationFeedback(List.of(errorMessage));
-        LayoutEvaluationResponse.ValidationResult validation = new LayoutEvaluationResponse.ValidationResult(false,
-                false, false, false);
-
-        return new LayoutEvaluationResponse(scores, feedback, validation);
     }
 }

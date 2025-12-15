@@ -7,8 +7,9 @@ import com.example.demo.domain.evaluation.service.AdvancedEvaluationService;
 import com.example.demo.domain.evaluation.service.LayoutEvaluationService;
 
 import jakarta.validation.Valid;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import java.util.List;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import lombok.RequiredArgsConstructor;
@@ -20,8 +21,6 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class EvaluationController {
 
-    private static final Logger logger = LoggerFactory.getLogger(EvaluationController.class);
-
     private final LayoutEvaluationService evaluationService;
     private final AdvancedEvaluationService advancedEvaluationService;
 
@@ -29,90 +28,54 @@ public class EvaluationController {
     @PostMapping("/layout")
     public ResponseEntity<ApiResponse<LayoutEvaluationResponse>> evaluateLayout(
             @Valid @RequestBody LayoutEvaluationRequest request) {
-        try {
-            logger.info("배치 평가 요청 (기본 모드): 거주지 크기={}, 모듈 수={}",
-                    request.getHabitatDimensions(),
-                    request.getModuleCount());
 
-            LayoutEvaluationResponse response = evaluationService.evaluateLayout(request);
+        LayoutEvaluationResponse response = evaluationService.evaluateLayout(request);
 
-            if (response.isSuccessful()) {
-                logger.info("배치 평가 성공: 최종점수={}", response.getScores().getOverallScore());
-                return ResponseEntity.ok(ApiResponse.success(response, "배치 평가가 완료되었습니다."));
-            } else {
-                logger.warn("배치 평가 실패: 패널티 점수 또는 검증 오류");
-                return ResponseEntity.ok(ApiResponse.success(response, "배치 평가를 신청하셨지만 제약 조건을 위반했습니다."));
-            }
+        String message = response.isSuccessful()
+                ? "배치 평가가 완료되었습니다."
+                : "배치 평가를 신청하셨지만 제약 조건을 위반했습니다.";
 
-        } catch (Exception e) {
-            logger.error("배치 평가 중 오류 발생", e);
-            return ResponseEntity.internalServerError()
-                    .body(ApiResponse.errorResponse("CALCULATION_ERROR", "배치 평가 중 오류가 발생했습니다: " + e.getMessage()));
-        }
+        return ResponseEntity.ok(ApiResponse.success(response, message));
     }
 
     // 배치 레이아웃 종합 평가 (고급 모드 - 미션별 가중치 + RAG)
     @PostMapping("/layout/advanced")
     public ResponseEntity<ApiResponse<LayoutEvaluationResponse>> evaluateLayoutAdvanced(
             @Valid @RequestBody LayoutEvaluationRequest request) {
-        try {
-            logger.info("배치 평가 요청 (고급 모드): 거주지 크기={}, 모듈 수={}, 미션={}",
-                    request.getHabitatDimensions(),
-                    request.getModuleCount(),
-                    request.getMissionProfile());
 
-            LayoutEvaluationResponse response = advancedEvaluationService.evaluateLayout(request);
+        LayoutEvaluationResponse response = advancedEvaluationService.evaluateLayout(request);
 
-            if (response.isSuccessful()) {
-                logger.info("배치 평가 성공 (고급): 최종점수={}", response.getScores().getOverallScore());
-                return ResponseEntity.ok(ApiResponse.success(response, "고급 배치 평가가 완료되었습니다."));
-            } else {
-                logger.warn("배치 평가 실패 (고급): 패널티 점수 또는 검증 오류");
-                return ResponseEntity.ok(ApiResponse.success(response, "고급 배치 평가를 신청하셨지만 제약 조건을 위반했습니다."));
-            }
+        String message = response.isSuccessful()
+                ? "고급 배치 평가가 완료되었습니다."
+                : "고급 배치 평가를 신청하셨지만 제약 조건을 위반했습니다.";
 
-        } catch (Exception e) {
-            logger.error("고급 배치 평가 중 오류 발생", e);
-            return ResponseEntity.internalServerError()
-                    .body(ApiResponse.errorResponse("CALCULATION_ERROR", "고급 배치 평가 중 오류가 발생했습니다: " + e.getMessage()));
-        }
+        return ResponseEntity.ok(ApiResponse.success(response, message));
     }
 
     // 실시간 배치 검증
     @PostMapping("/validate")
     public ResponseEntity<ApiResponse<ModulePlacementValidationResponse>> validatePlacement(
             @Valid @RequestBody ModulePlacementValidationRequest request) {
-        try {
-            logger.debug("실시간 배치 검증 요청: 모듈ID={}, 위치={}",
-                    request.getNewModule().getModuleId(),
-                    request.getNewModule().getPosition());
 
-            // 검증 로직
-            ModulePlacementValidationResponse response = new ModulePlacementValidationResponse();
-            response.setValid(true);
-            response.setConflicts(java.util.List.of());
-            response.setWarnings(java.util.List.of());
+        // 검증 로직
+        ModulePlacementValidationResponse response = new ModulePlacementValidationResponse();
+        response.setValid(true);
+        response.setConflicts(List.of());
+        response.setWarnings(List.of());
 
-            // 모듈이 거주지 범위를 벗어나는지 확인
-            if (isModuleOutOfBounds(request)) {
-                response.setValid(false);
-                response.setConflicts(java.util.List.of("모듈이 거주지 공간을 벗어났습니다."));
-            }
-
-            // 기존 모듈과의 겹침 확인
-            if (hasOverlappingWithExisting(request)) {
-                response.setValid(false);
-                response.setConflicts(java.util.List.of("다른 모듈과 겹치는 위치입니다."));
-            }
-
-            logger.debug("실시간 배치 검증 완료: 유효성={}", response.isValid());
-            return ResponseEntity.ok(ApiResponse.success(response));
-
-        } catch (Exception e) {
-            logger.error("실시간 배치 검증 중 오류 발생", e);
-            return ResponseEntity.internalServerError()
-                    .body(ApiResponse.errorResponse("VALIDATION_ERROR", "배치 검증 중 오류가 발생했습니다."));
+        // 모듈이 거주지 범위를 벗어나는지 확인
+        if (isModuleOutOfBounds(request)) {
+            response.setValid(false);
+            response.setConflicts(List.of("모듈이 거주지 공간을 벗어났습니다."));
         }
+
+        // 기존 모듈과의 겹침 확인
+        if (hasOverlappingWithExisting(request)) {
+            response.setValid(false);
+            response.setConflicts(List.of("다른 모듈과 겹치는 위치입니다."));
+        }
+
+        return ResponseEntity.ok(ApiResponse.success(response));
     }
 
     // /**

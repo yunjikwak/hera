@@ -4,6 +4,9 @@ import com.example.demo.domain.rag.entity.DocChunk;
 import com.example.demo.domain.rag.dto.RagAnswer;
 import com.example.demo.domain.rag.dto.RagQueryRequest;
 import com.example.demo.domain.rag.repository.DocChunkRepository;
+import com.example.demo.domain.rag.service.VectorSearchService.SearchResult;
+import com.example.demo.global.exception.BusinessException;
+import com.example.demo.global.exception.ErrorCode;
 import com.example.demo.infra.embedding.EmbeddingService;
 import com.example.demo.infra.llm.LlmClient;
 
@@ -28,75 +31,81 @@ public class RagQueryService {
         private final LlmClient llmClient;
         private final DocChunkRepository docChunkRepository;
 
-        @Transactional
+        @Transactional(readOnly = true)
         public RagAnswer query(RagQueryRequest request) {
                 if (!llmClient.isAvailable()) {
-                        logger.warn("LLM service not available");
-                        return new RagAnswer("LLM service is not available. Please check your Ollama installation.",
-                                        new ArrayList<>(), new ArrayList<>());
+                        throw new BusinessException(ErrorCode.LLM_SERVICE_UNAVAILABLE);
                 }
 
-                // 1. Generate embedding for the question
-                float[] queryEmbedding = embeddingService.generateEmbedding(request.getQuestion());
+                try {
+                        // 질문 임베딩 생성
+                        float[] queryEmbedding = embeddingService.generateEmbedding(request.getQuestion());
 
-                // 2. Search for similar chunks in the vector store
-                List<VectorSearchService.SearchResult> searchResults = vectorSearchService.searchSimilar(
-                                queryEmbedding, request.getTopK());
-                logger.info("Found {} similar chunks", searchResults.size());
+                        // 벡터 검색 수행
+                        List<SearchResult> searchResults = vectorSearchService.searchSimilar(
+                                        queryEmbedding, request.getTopK());
+                        logger.info("Found {} similar chunks", searchResults.size());
 
-                if (searchResults.isEmpty()) {
-                        logger.warn("No similar chunks found for query");
-                        return new RagAnswer("No relevant information found in the knowledge base.",
-                                        new ArrayList<>(), new ArrayList<>());
-                }
+                        if (searchResults.isEmpty()) {
+                                logger.warn("No similar chunks found for query");
+                                return new RagAnswer("No relevant information found in the knowledge base.",
+                                                new ArrayList<>(), new ArrayList<>());
+                        }
 
-                // 3. Retrieve chunk details and build context
-                List<RagAnswer.Chunk> chunks = new ArrayList<>();
-                List<RagAnswer.Source> sources = new ArrayList<>();
-                StringBuilder contextBuilder = new StringBuilder();
+                        // 청크 상세 정보 조회 및 컨텍스트 빌드
+                        List<RagAnswer.Chunk> chunks = new ArrayList<>();
+                        List<RagAnswer.Source> sources = new ArrayList<>();
+                        StringBuilder contextBuilder = new StringBuilder();
 
-                for (VectorSearchService.SearchResult result : searchResults) {
-                        Optional<DocChunk> chunkOpt = docChunkRepository.findById(result.getChunkId());
-                        if (chunkOpt.isPresent()) {
-                                DocChunk chunk = chunkOpt.get();
+                        for (SearchResult result : searchResults) {
+                                Optional<DocChunk> chunkOpt = docChunkRepository.findById(result.getChunkId());
+                                if (chunkOpt.isPresent()) {
+                                        DocChunk chunk = chunkOpt.get();
 
-                                // Add to chunk list for the response
-                                chunks.add(new RagAnswer.Chunk(
-                                                chunk.getId(),
-                                                chunk.getText(),
-                                                chunk.getSourcePath(),
-                                                chunk.getPageNo(),
-                                                result.getSimilarity()));
-
-                                // Add to source list for the response (avoiding duplicates)
-                                String sourceKey = chunk.getSourcePath() + ":" + chunk.getPageNo();
-                                if (sources.stream().noneMatch(
-                                                s -> (s.getSourcePath() + ":" + s.getPageNo()).equals(sourceKey))) {
-                                        String preview = chunk.getText().length() > 200
-                                                        ? chunk.getText().substring(0, 200) + "..."
-                                                        : chunk.getText();
-                                        sources.add(new RagAnswer.Source(
+                                        // 청크 리스트에 추가
+                                        chunks.add(new RagAnswer.Chunk(
+                                                        chunk.getId(),
+                                                        chunk.getText(),
                                                         chunk.getSourcePath(),
                                                         chunk.getPageNo(),
-                                                        preview));
+                                                        result.getSimilarity()));
+
+                                        // 소스 리스트에 추가 (중복 방지)
+                                        String sourceKey = chunk.getSourcePath() + ":" + chunk.getPageNo();
+                                        boolean isDuplicate = sources.stream().anyMatch(
+                                                        s -> (s.getSourcePath() + ":" + s.getPageNo())
+                                                                        .equals(sourceKey));
+                                        if (!isDuplicate) {
+                                                String preview = chunk.getText().length() > 200
+                                                                ? chunk.getText().substring(0, 200) + "..."
+                                                                : chunk.getText();
+                                                sources.add(new RagAnswer.Source(
+                                                                chunk.getSourcePath(),
+                                                                chunk.getPageNo(),
+                                                                preview));
+                                        }
+
+                                        // 프롬프트용 컨텍스트 빌드
+                                        contextBuilder.append("Source: ").append(chunk.getSourcePath())
+                                                        .append(" (Page ").append(chunk.getPageNo()).append(")\n");
+                                        contextBuilder.append("Content: ").append(chunk.getText()).append("\n\n");
                                 }
-
-                                // Build the context for the LLM
-                                contextBuilder.append("Source: ").append(chunk.getSourcePath())
-                                                .append(" (Page ").append(chunk.getPageNo()).append(")\n");
-                                contextBuilder.append("Content: ").append(chunk.getText()).append("\n\n");
                         }
+
+                        // LLM 프롬프트 생성 및 요청
+                        String context = contextBuilder.toString();
+                        String prompt = buildPrompt(request.getQuestion(), context, request.getMission());
+
+                        String answer = llmClient.generateResponse(prompt);
+                        logger.info("LLM response generated (length: {} chars)", answer.length());
+
+                        return new RagAnswer(answer, sources, chunks);
+                } catch (BusinessException e) {
+                        throw e;
+                } catch (Exception e) {
+                        logger.error("RAG processing failed", e);
+                        throw new BusinessException(ErrorCode.RAG_SERVICE_ERROR, "답변 생성 중 오류가 발생했습니다.", e);
                 }
-
-                // 4. Build the prompt for the LLM
-                String context = contextBuilder.toString();
-                String prompt = buildPrompt(request.getQuestion(), context, request.getMission());
-
-                // 5. Generate the final answer from the LLM
-                String answer = llmClient.generateResponse(prompt);
-                logger.info("LLM response generated (length: {} chars)", answer.length());
-
-                return new RagAnswer(answer, sources, chunks);
         }
 
         private String buildPrompt(String question, String context, String mission) {
